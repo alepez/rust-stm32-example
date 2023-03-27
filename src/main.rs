@@ -1,39 +1,71 @@
-#![deny(unsafe_code)]
-#![allow(clippy::empty_loop)]
-#![no_main]
 #![no_std]
+#![no_main]
 
-// Halt on panic
-use panic_halt as _; // panic handler
+extern crate panic_halt;
 
+use core::convert::Infallible;
+
+use cortex_m::peripheral::Peripherals;
 use cortex_m_rt::entry;
-use stm32f4xx_hal as hal;
+use embedded_hal::digital::v2::ToggleableOutputPin;
+use stm32f0xx_hal::delay::Delay;
+use stm32f0xx_hal::prelude::*;
+use stm32f0xx_hal::stm32;
 
-use crate::hal::{pac, prelude::*};
+struct Led<'a> {
+    pin: &'a mut dyn ToggleableOutputPin<Error = Infallible>,
+}
 
-#[entry]
-fn main() -> ! {
-    if let (Some(dp), Some(cp)) = (
-        pac::Peripherals::take(),
-        cortex_m::peripheral::Peripherals::take(),
-    ) {
-        // Set up the LED. On the Nucleo-446RE it's connected to pin PA5.
-        let gpioa = dp.GPIOA.split();
-        let mut led = gpioa.pa5.into_push_pull_output();
-
-        // Set up the system clock. We want to run at 48MHz for this one.
-        let rcc = dp.RCC.constrain();
-        let clocks = rcc.cfgr.sysclk(48.MHz()).freeze();
-
-        // Create a delay abstraction based on SysTick
-        let mut delay = cp.SYST.delay(&clocks);
-
-        loop {
-            // On for 1s, off for 1s.
-            led.toggle();
-            delay.delay_ms(1000_u32);
-        }
+impl Led<'_> {
+    fn new(pin: &mut dyn ToggleableOutputPin<Error = Infallible>) -> Led {
+        Led { pin }
     }
 
-    loop {}
+    fn toggle(&mut self) -> Result<(), Infallible> {
+        self.pin.toggle()
+    }
+}
+
+// use `main` as the entry point of this application
+#[entry]
+fn main() -> ! {
+    let mut peripherals = stm32::Peripherals::take().unwrap();
+    let cp = Peripherals::take().unwrap();
+
+    cortex_m::interrupt::free(|cs| {
+        let mut rcc = peripherals
+            .RCC
+            .configure()
+            .sysclk(8.mhz())
+            .freeze(&mut peripherals.FLASH);
+
+        let gpioc = peripherals.GPIOC.split(&mut rcc);
+
+        let mut delay = Delay::new(cp.SYST, &rcc);
+
+        let orange = gpioc.pc8.into_push_pull_output(cs);
+        let green = gpioc.pc9.into_push_pull_output(cs);
+        let red = gpioc.pc6.into_push_pull_output(cs);
+        let blue = gpioc.pc7.into_push_pull_output(cs);
+
+        let mut orange = orange.downgrade();
+        let mut green = green.downgrade();
+        let mut red = red.downgrade();
+        let mut blue = blue.downgrade();
+
+        let mut leds: [Led; 4] = [
+            Led::new(&mut orange),
+            Led::new(&mut green),
+            Led::new(&mut red),
+            Led::new(&mut blue),
+        ];
+
+        let mut i = 0;
+
+        loop {
+            leds[i % 4].toggle().unwrap();
+            i += 1;
+            delay.delay_ms(20_u16);
+        }
+    })
 }
